@@ -353,7 +353,7 @@ def textblob_sentiment(texts: list) -> pd.DataFrame:
 
 
 @st.cache_data
-def run_sentiment(_df: pd.DataFrame) -> pd.DataFrame:
+def run_sentiment(_df: pd.DataFrame, url_key: str) -> pd.DataFrame:
     groq_key = _load_groq_token()
     texts    = _df["comment_clean"].astype(str).tolist()
 
@@ -649,7 +649,7 @@ def render_analysis(df_raw: pd.DataFrame, prefix: str, source_label: str = ""):
     import plotly.graph_objects as go
 
     df_clean = run_cleaning(df_raw)
-    df_sent  = run_sentiment(df_clean)
+    df_sent  = run_sentiment(df_clean, source_label)
     df_final, profiles = run_clustering(df_sent, n_clusters)
 
     # ── SECTION 2 — ANALYSIS ──────────────────
@@ -877,6 +877,10 @@ with tab_url:
         )
 
     if st.button("🚀 Scrape & Analyse", key="btn_scrape") and reel_url and apify_token:
+        if "url_ready" in st.session_state:
+           del st.session_state["url_ready"] 
+        run_sentiment.clear()                
+        run_clustering.clear()
         import requests, time
 
         try:
