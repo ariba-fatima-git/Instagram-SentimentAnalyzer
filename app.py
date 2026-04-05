@@ -999,4 +999,7 @@ else:
         if st.button("🗑️ Clear all results"):
             for k in ["csv_ready", "url_ready", "manual_ready"]:
                 st.session_state.pop(k, None)
+            run_cleaning.clear()
+            run_sentiment.clear()
+            run_clustering.clear()
             st.rerun()
