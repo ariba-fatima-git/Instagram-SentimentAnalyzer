@@ -212,7 +212,7 @@ def run_cleaning(df: pd.DataFrame) -> pd.DataFrame:
     df = df.dropna(subset=["comment"])
     df = df[df["comment"].str.strip() != ""]
     df = df.drop_duplicates(subset="comment")
-    df = df[df["comment"].str.split().str.len() >= 2]
+    df = df[df["comment"].str.split().str.len() >= 1]  # allow single-word cultural terms e.g. Mashallah
     df["comment_clean"] = df["comment"].apply(clean_text_basic)
     df["word_count"]    = df["comment_clean"].str.split().str.len()
     df["emoji_count"]   = df["comment"].apply(count_emojis)
@@ -284,6 +284,8 @@ def groq_sentiment(groq_key: str, texts: list) -> pd.DataFrame:
                 if label not in ("Positive", "Neutral", "Negative"):
                     label = "Neutral"
                 conf = float(item.get("confidence", 0.5))
+                if conf == 0:
+                    conf = 0.5  # treat 0 as uncertain, not zero confidence
                 results.append({
                     "sentiment":  label,
                     "confidence": round(conf, 4),
@@ -353,14 +355,15 @@ def textblob_sentiment(texts: list) -> pd.DataFrame:
 
 
 @st.cache_data
-def run_sentiment(_df: pd.DataFrame, url_key: str) -> pd.DataFrame:
+def run_sentiment(_df: pd.DataFrame) -> pd.DataFrame:
     groq_key = _load_groq_token()
     texts    = _df["comment_clean"].astype(str).tolist()
 
     if groq_key:
         with st.spinner("🤖 Running multilingual sentiment via Groq (llama-3.3-70b)..."):
             sent_df = groq_sentiment(groq_key, texts)
-        sent_df = patch_cultural_sentiment(sent_df, texts)
+        original_texts = _df["comment"].astype(str).tolist()  # use raw text for cultural matching
+        sent_df = patch_cultural_sentiment(sent_df, original_texts)
     else:
         st.info("💡 GROQ_API_KEY not set — using TextBlob as fallback.")
         try:
@@ -622,12 +625,12 @@ with st.sidebar:
     st.markdown("""
     1. **Collect** — CSV, URL or manual input
     2. **Clean** — deduplicate, filter, detect language
-    3. **Sentiment** — XLM-RoBERTa (100+ languages)
+    3. **Sentiment** — Groq LLaMA-3.3-70B (100+ languages)
     4. **Cluster** — KMeans + TF-IDF
     5. **Insights** — summary + report
     """)
     st.divider()
-    st.markdown("**Model:** `cardiffnlp/twitter-xlm-roberta-base-sentiment` 🌍")
+    st.markdown("**Model:** `groq/llama-3.3-70b-versatile` 🌍")
     st.caption("Supports English, Urdu, Arabic, Hindi, French, Spanish and 95+ more languages.")
 
 
@@ -649,7 +652,7 @@ def render_analysis(df_raw: pd.DataFrame, prefix: str, source_label: str = ""):
     import plotly.graph_objects as go
 
     df_clean = run_cleaning(df_raw)
-    df_sent  = run_sentiment(df_clean, source_label)
+    df_sent  = run_sentiment(df_clean)
     df_final, profiles = run_clustering(df_sent, n_clusters)
 
     # ── SECTION 2 — ANALYSIS ──────────────────
@@ -877,10 +880,6 @@ with tab_url:
         )
 
     if st.button("🚀 Scrape & Analyse", key="btn_scrape") and reel_url and apify_token:
-        if "url_ready" in st.session_state:
-           del st.session_state["url_ready"] 
-        run_sentiment.clear()                
-        run_clustering.clear()
         import requests, time
 
         try:
@@ -958,24 +957,32 @@ with tab_manual:
         if not lines:
             st.warning("Please enter at least one comment.")
         elif len(lines) == 1:
-            try:
-                from textblob import TextBlob
-                pol = TextBlob(lines[0]).sentiment.polarity
-            except Exception:
-                pol = 0.0
-            label = "Positive 😊" if pol > 0.05 else "Negative 😞" if pol < -0.05 else "Neutral 😐"
-            color = "#00c851"    if pol > 0.05 else "#ff4444"     if pol < -0.05 else "#ffbb33"
-            st.markdown(f"""
-            <div style="background:#1e1e2e;border-radius:12px;padding:1.5rem;
-                        border-left:5px solid {color};margin-top:1rem;">
-                <div style="font-size:0.8rem;color:#aaa;margin-bottom:0.5rem">YOUR COMMENT</div>
-                <div style="font-size:1rem;color:#e0e0e0;margin-bottom:1.2rem">"{lines[0]}"</div>
-                <div style="font-size:2.2rem;font-weight:800;color:{color}">{label}</div>
-                <div style="font-size:0.85rem;color:#888;margin-top:0.4rem">
-                    Confidence: {round(abs(pol), 2)}
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+            text_lower = lines[0].lower()
+            # Check cultural terms FIRST — TextBlob does not understand these words
+            if any(term.lower() in text_lower for term in CULTURAL_POSITIVE_TERMS):
+                label = "Positive 😊"
+                color = "#00c851"
+                conf  = 0.90
+            else:
+                try:
+                    from textblob import TextBlob
+                    pol = TextBlob(lines[0]).sentiment.polarity
+                except Exception:
+                    pol = 0.0
+                label = "Positive 😊" if pol > 0.05 else "Negative 😞" if pol < -0.05 else "Neutral 😐"
+                color = "#00c851"    if pol > 0.05 else "#ff4444"     if pol < -0.05 else "#ffbb33"
+                conf  = round(abs(pol), 2) if pol != 0.0 else 0.5
+            html = (
+                '<div style="background:#1e1e2e;border-radius:12px;padding:1.5rem;'
+                f'border-left:5px solid {color};margin-top:1rem;">'
+                '<div style="font-size:0.8rem;color:#aaa;margin-bottom:0.5rem">YOUR COMMENT</div>'
+                f'<div style="font-size:1rem;color:#e0e0e0;margin-bottom:1.2rem">"{lines[0]}"</div>'
+                f'<div style="font-size:2.2rem;font-weight:800;color:{color}">{label}</div>'
+                '<div style="font-size:0.85rem;color:#888;margin-top:0.4rem">'
+                f'Confidence: {conf}'
+                '</div></div>'
+            )
+            st.markdown(html, unsafe_allow_html=True)
         else:
             st.session_state["manual_ready"] = pd.DataFrame({"text": lines})
             st.success(f"✅ {len(lines)} comments loaded — running analysis!")
