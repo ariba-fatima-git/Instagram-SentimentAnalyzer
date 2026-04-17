@@ -738,4 +738,4 @@ with st.sidebar:
     """)
     st.divider()
     st.markdown("**Model:** `groq/llama-3.3-70b-versatile` 🌍")
-    st.caption("Supports English, Urdu (including Roman Urdu), Arabic, Hindi, French, Spanish
+    st.caption("Supports English, Urdu (including Roman Urdu), Arabic, Hindi, French, Spanish")
