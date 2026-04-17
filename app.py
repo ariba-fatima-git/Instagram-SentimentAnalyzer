@@ -181,6 +181,51 @@ def clean_text_basic(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def detect_and_normalize_roman_urdu(text: str) -> tuple:
+    """
+    Detect Roman Urdu and normalize common patterns.
+    Returns (normalized_text, is_roman_urdu)
+    """
+    text_lower = text.lower()
+    
+    # Common Roman Urdu indicators
+    urdu_indicators = [
+        'hai', 'hain', 'tha', 'thi', 'thay', 'ko', 'ne', 'se', 'ka', 'ki', 'ke',
+        'acha', 'achi', 'achay', 'bohat', 'bohot', 'yar', 'yaar', 'na', 'kya',
+        'islamabad', 'lahore', 'karachi', 'multan', 'acha hai', 'bohat acha'
+    ]
+    
+    # Count Urdu indicators
+    urdu_score = sum(1 for word in urdu_indicators if word in text_lower)
+    
+    # If likely Roman Urdu
+    if urdu_score >= 2 or any(city in text_lower for city in ['islamabad', 'lahore', 'karachi']):
+        # Fix city names - remove "bad" substring misinterpretation
+        text = re.sub(r'islamabad', 'Islamabad (capital city)', text, flags=re.IGNORECASE)
+        text = re.sub(r'lahore', 'Lahore (city in Pakistan)', text, flags=re.IGNORECASE)
+        text = re.sub(r'karachi', 'Karachi (city in Pakistan)', text, flags=re.IGNORECASE)
+        
+        # Add context hint for the model
+        hint = " [Note: Roman Urdu comment. Words like 'acha'='good', 'bohat'='very', 'khoobsurat'='beautiful' indicate positive sentiment]"
+        
+        # Map common positive Roman Urdu words to English
+        positive_map = {
+            'acha': 'good', 'achi': 'good', 'achay': 'good',
+            'bohat': 'very', 'bohot': 'very',
+            'khoobsurat': 'beautiful', 'pyara': 'lovely', 'pyari': 'lovely',
+            'zabardast': 'excellent', 'umda': 'great', 'behtareen': 'best',
+            'mazedar': 'enjoyable', 'lajawab': 'unbeatable', 'wonderful': 'wonderful'
+        }
+        
+        for urdu_word, english_word in positive_map.items():
+            if urdu_word in text_lower:
+                text = re.sub(rf'\b{urdu_word}\b', f'{english_word}', text, flags=re.IGNORECASE)
+        
+        return text + hint, True
+    
+    return text, False
+
+
 def top_words(texts: list, n: int = 15) -> list:
     all_words = []
     for text in texts:
@@ -253,7 +298,14 @@ def groq_sentiment(groq_key: str, texts: list) -> pd.DataFrame:
             "- Reply ONLY with a JSON array, no explanation, no markdown.\n"
             "- Each item must have: index (int), sentiment (str), confidence (float 0-1).\n"
             "- Consider cultural expressions (e.g. MashaAllah, Alhamdulillah) as Positive.\n"
-            "- Works for any language: English, Urdu, Arabic, Hindi, French, etc.\n\n"
+            "- IMPORTANT for Roman Urdu (Urdu written in English letters):\n"
+            "  * 'acha', 'achi', 'achay' = GOOD (Positive)\n"
+            "  * 'bohat', 'bohot' = VERY (amplifies sentiment)\n"
+            "  * 'khoobsurat', 'pyara', 'pyari' = BEAUTIFUL/LOVELY (Positive)\n"
+            "  * 'zabardast', 'umda', 'behtareen' = EXCELLENT/GREAT/BEST (Positive)\n"
+            "- IMPORTANT: City names like 'Islamabad', 'Lahore', 'Karachi' are NEUTRAL.\n"
+            "  Do NOT interpret the 'bad' substring in 'Islamabad' as negative.\n"
+            "- Works for any language: English, Urdu (including Roman Urdu), Arabic, Hindi, French, etc.\n\n"
             f"Comments:\n{numbered}\n\n"
             "Reply format: [{\"index\":1,\"sentiment\":\"Positive\",\"confidence\":0.95}, ...]"
         )
@@ -302,6 +354,9 @@ def groq_sentiment(groq_key: str, texts: list) -> pd.DataFrame:
                 })
 
     return pd.DataFrame(results)
+
+
+# Your existing cultural positive terms (preserved)
 CULTURAL_POSITIVE_TERMS = {
     "mashallah", "masha'allah", "masha allah", "alhamdulillah", "subhanallah",
     "allahu akbar", "inshallah", "jazakallah", "barakallah", "tabarak allah",
@@ -309,8 +364,16 @@ CULTURAL_POSITIVE_TERMS = {
     "ماشاء الله", "الحمد لله", "سبحان الله",
 }
 
+# NEW: Roman Urdu positive words
+ROMAN_URDU_POSITIVE = {
+    "acha", "achi", "achay", "bohat", "bohot", "khoobsurat", "pyara", "pyari",
+    "zabardast", "umda", "behtareen", "mazedar", "lajawab", "wonderful",
+    "acha hai", "bohat acha", "bohat khoob", "kia baat hai", "well done",
+}
+
 
 def patch_cultural_sentiment(df: pd.DataFrame, original_texts: list) -> pd.DataFrame:
+    """Apply cultural positive terms and Roman Urdu fixes."""
     df = df.copy()
     for i, text in enumerate(original_texts):
         if i >= len(df):
@@ -318,20 +381,42 @@ def patch_cultural_sentiment(df: pd.DataFrame, original_texts: list) -> pd.DataF
             
         text_lower = str(text).lower()
         
-        # Check if any cultural term exists in this specific comment
+        # Check existing cultural terms
         has_cultural_term = any(term.lower() in text_lower for term in CULTURAL_POSITIVE_TERMS)
         
-        # LOGIC CHANGE: 
-        # If it has a cultural term AND the AI didn't already mark it as Positive, 
-        # or if the AI is even slightly unsure (confidence < 0.85)
-        if has_cultural_term and (df.at[i, "sentiment"] != "Positive" or df.at[i, "confidence"] < 0.85):
-            df.at[i, "sentiment"]  = "Positive"
-            df.at[i, "confidence"] = 0.90  # Set it higher so it shows up clearly
-            df.at[i, "score_pos"]  = 0.90
-            df.at[i, "score_neu"]  = 0.05
-            df.at[i, "score_neg"]  = 0.05
+        # NEW: Check Roman Urdu positive words
+        has_urdu_positive = any(word in text_lower for word in ROMAN_URDU_POSITIVE)
+        
+        # Check for city names that might cause false negatives
+        has_islamabad = "islamabad" in text_lower
+        has_lahore = "lahore" in text_lower
+        has_karachi = "karachi" in text_lower
+        has_city_name = has_islamabad or has_lahore or has_karachi
+        
+        # Check for explicit negative words near city names
+        negative_indicators = ["bad", "worst", "ugly", "hate", "dislike", "terrible", "awful"]
+        has_nearby_negative = any(neg in text_lower for neg in negative_indicators)
+        
+        # LOGIC: Prioritize cultural and Roman Urdu positives
+        if (has_cultural_term or has_urdu_positive) and not has_nearby_negative:
+            df.at[i, "sentiment"] = "Positive"
+            df.at[i, "confidence"] = 0.94
+            df.at[i, "score_pos"] = 0.94
+            df.at[i, "score_neu"] = 0.03
+            df.at[i, "score_neg"] = 0.03
+        elif has_city_name and not has_nearby_negative:
+            # City name alone or with positive words should NOT be negative
+            current_sentiment = df.at[i, "sentiment"]
+            if current_sentiment == "Negative":
+                # Check if there are any positive indicators
+                positive_indicators = ["good", "nice", "love", "beautiful", "great"] + list(ROMAN_URDU_POSITIVE)
+                has_any_positive = any(word in text_lower for word in positive_indicators)
+                if has_any_positive or len(text_lower.split()) <= 3:  # Short comment mentioning city
+                    df.at[i, "sentiment"] = "Neutral"
+                    df.at[i, "confidence"] = min(df.at[i, "confidence"] + 0.25, 0.90)
             
     return df
+
 
 def textblob_sentiment(texts: list) -> pd.DataFrame:
     from textblob import TextBlob
@@ -357,22 +442,44 @@ def textblob_sentiment(texts: list) -> pd.DataFrame:
 @st.cache_data
 def run_sentiment(_df: pd.DataFrame) -> pd.DataFrame:
     groq_key = _load_groq_token()
-    texts    = _df["comment_clean"].astype(str).tolist()
+    original_texts = _df["comment"].astype(str).tolist()
+    
+    # NEW: Process Roman Urdu before sentiment analysis
+    processed_texts = []
+    is_urdu_flags = []
+    for text in original_texts:
+        processed, is_urdu = detect_and_normalize_roman_urdu(text)
+        processed_texts.append(processed)
+        is_urdu_flags.append(is_urdu)
 
     if groq_key:
         with st.spinner("🤖 Running multilingual sentiment via Groq (llama-3.3-70b)..."):
-            sent_df = groq_sentiment(groq_key, texts)
-        original_texts = _df["comment"].astype(str).tolist()  # use raw text for cultural matching
+            sent_df = groq_sentiment(groq_key, processed_texts)
+        
+        # Apply cultural and Roman Urdu patches
         sent_df = patch_cultural_sentiment(sent_df, original_texts)
+        
+        # Additional boost for Roman Urdu comments that are likely positive
+        for i, is_urdu in enumerate(is_urdu_flags):
+            if is_urdu and sent_df.at[i, "sentiment"] != "Positive":
+                text_lower = original_texts[i].lower()
+                positive_indicators = list(ROMAN_URDU_POSITIVE) + ["good", "nice", "love", "beautiful", "great"]
+                if any(word in text_lower for word in positive_indicators):
+                    sent_df.at[i, "sentiment"] = "Positive"
+                    sent_df.at[i, "confidence"] = 0.89
+                    sent_df.at[i, "score_pos"] = 0.89
+                    sent_df.at[i, "score_neu"] = 0.06
+                    sent_df.at[i, "score_neg"] = 0.05
+                    
     else:
         st.info("💡 GROQ_API_KEY not set — using TextBlob as fallback.")
         try:
-            sent_df = textblob_sentiment(texts)
+            sent_df = textblob_sentiment(processed_texts)
         except ImportError:
             import random
             random.seed(42)
             results = []
-            for _ in texts:
+            for _ in processed_texts:
                 label = random.choices(
                     ["Positive","Neutral","Negative"], weights=[0.6,0.25,0.15]
                 )[0]
@@ -631,405 +738,4 @@ with st.sidebar:
     """)
     st.divider()
     st.markdown("**Model:** `groq/llama-3.3-70b-versatile` 🌍")
-    st.caption("Supports English, Urdu, Arabic, Hindi, French, Spanish and 95+ more languages.")
-
-
-# ─────────────────────────────────────────────
-# HEADER
-# ─────────────────────────────────────────────
-
-st.markdown('<div class="main-title">📊 Instagram Sentiment Analyser</div>', unsafe_allow_html=True)
-st.markdown('<div class="subtitle">Audience intelligence from Instagram Reel comments</div>', unsafe_allow_html=True)
-
-
-# ─────────────────────────────────────────────
-# SHARED ANALYSIS RENDERER
-# Called by each tab with its own data + unique prefix
-# ─────────────────────────────────────────────
-
-def render_analysis(df_raw: pd.DataFrame, prefix: str, source_label: str = ""):
-    import plotly.express as px
-    import plotly.graph_objects as go
-
-    df_clean = run_cleaning(df_raw)
-    df_sent  = run_sentiment(df_clean)
-    df_final, profiles = run_clustering(df_sent, n_clusters)
-
-    # ── SECTION 2 — ANALYSIS ──────────────────
-    st.markdown("---")
-    
-    st.markdown("### <span class='step-badge'>1</span> Data Input", unsafe_allow_html=True)
-    
-    st.caption(f"📌 Source: {source_label}")
-
-    counts = df_final["sentiment"].value_counts()
-    total  = len(df_final)
-    lang_counts = df_final["language"].value_counts() if "language" in df_final.columns else None
-
-    # ── Metric row ──
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Total Comments", f"{total:,}")
-    with col2:
-        n = counts.get("Positive", 0)
-        st.metric("✅ Positive", f"{n} ({n/total*100:.0f}%)")
-    with col3:
-        n = counts.get("Neutral", 0)
-        st.metric("➖ Neutral", f"{n} ({n/total*100:.0f}%)")
-    with col4:
-        n = counts.get("Negative", 0)
-        st.metric("❌ Negative", f"{n} ({n/total*100:.0f}%)")
-
-    # ── Language breakdown badge row ──
-    if lang_counts is not None and not lang_counts.index.tolist() == ["unknown"]:
-        st.markdown("#### 🌍 Languages Detected")
-        lang_cols = st.columns(min(len(lang_counts), 6))
-        lang_names = {
-            "en":"English","ur":"Urdu","ar":"Arabic","hi":"Hindi",
-            "fr":"French","es":"Spanish","de":"German","tr":"Turkish",
-            "pt":"Portuguese","it":"Italian","zh-cn":"Chinese","ja":"Japanese",
-            "ko":"Korean","ru":"Russian","nl":"Dutch","pl":"Polish",
-        }
-        for i, (lang, cnt) in enumerate(lang_counts.head(6).items()):
-            with lang_cols[i]:
-                name = lang_names.get(lang, lang.upper())
-                pct  = round(cnt / total * 100, 1)
-                st.markdown(f"""
-                <div style="background:#1e1e2e;border-radius:10px;padding:0.8rem;
-                            text-align:center;border:1px solid #333;">
-                    <div style="font-size:1.4rem">{name}</div>
-                    <div style="font-size:1.5rem;font-weight:800;color:#a78bfa">{cnt}</div>
-                    <div style="font-size:0.75rem;color:#888">{pct}% of comments</div>
-                </div>
-                """, unsafe_allow_html=True)
-
-        # Language pie chart
-        lang_df = lang_counts.reset_index()
-        lang_df.columns = ["Language", "Count"]
-        lang_df["Language"] = lang_df["Language"].apply(lambda x: lang_names.get(x, x.upper()))
-        fig_lang = px.pie(
-            lang_df, names="Language", values="Count",
-            hole=0.4, title="Comment Language Distribution",
-        )
-        fig_lang.update_layout(
-            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            margin=dict(t=40, b=20), height=320,
-        )
-        st.plotly_chart(fig_lang, use_container_width=True, key=f"{prefix}_lang_pie")
-
-    # ── Sentiment charts ──
-    st.markdown("#### Sentiment Breakdown")
-    pie_data = df_final["sentiment"].value_counts().reset_index()
-    pie_data.columns = ["Sentiment", "Count"]
-
-    col_a, col_b = st.columns(2)
-    with col_a:
-        fig_pie = px.pie(
-            pie_data, names="Sentiment", values="Count", color="Sentiment",
-            color_discrete_map={"Positive":"#00c851","Neutral":"#ffbb33","Negative":"#ff4444"},
-            hole=0.45,
-        )
-        fig_pie.update_layout(
-            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            legend=dict(orientation="h", y=-0.1), margin=dict(t=20, b=20),
-        )
-        st.plotly_chart(fig_pie, use_container_width=True, key=f"{prefix}_pie")
-
-    with col_b:
-        fig_bar = px.bar(
-            pie_data, x="Sentiment", y="Count", color="Sentiment",
-            color_discrete_map={"Positive":"#00c851","Neutral":"#ffbb33","Negative":"#ff4444"},
-            text="Count",
-        )
-        fig_bar.update_layout(
-            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            showlegend=False, margin=dict(t=20, b=20), yaxis=dict(gridcolor="#333"),
-        )
-        fig_bar.update_traces(textposition="outside")
-        st.plotly_chart(fig_bar, use_container_width=True, key=f"{prefix}_bar")
-
-    # ── Keyword themes ──
-    st.markdown("#### 🔑 Keyword Themes by Sentiment")
-    wc1, wc2, wc3 = st.columns(3)
-    for wcol, label, color in zip(
-        [wc1, wc2, wc3], ["Positive", "Neutral", "Negative"],
-        ["#00c851", "#ffbb33", "#ff4444"]
-    ):
-        with wcol:
-            st.markdown(f"**{label}**")
-            subset = df_final[df_final["sentiment"] == label]["comment_clean"].tolist()
-            words  = top_words(subset, 10)
-            fig_wc = make_wordcloud_fig(words, color)
-            if fig_wc:
-                st.plotly_chart(fig_wc, use_container_width=True, key=f"{prefix}_wc_{label}")
-
-    # ── Data table ──
-    with st.expander("🔍 View Processed Data"):
-        display_cols = ["comment", "language", "sentiment", "confidence",
-                        "score_pos", "score_neg", "cluster_label"]
-        display_cols = [c for c in display_cols if c in df_final.columns]
-        st.dataframe(df_final[display_cols], use_container_width=True)
-
-    # ── SECTION 3 — INSIGHTS ─────────────────
-    st.markdown("---")
-    st.markdown("### <span class='step-badge'>3</span> Audience Insights", unsafe_allow_html=True)
-
-    st.markdown("#### 👥 Audience Segments")
-    seg_cols = st.columns(min(len(profiles), 4))
-    for i, profile in enumerate(profiles):
-        with seg_cols[i % len(seg_cols)]:
-            sent = profile["sentiment_dist"]
-            dom_color = (
-                "#00c851" if sent.get("Positive",0) >= max(sent.get("Neutral",0), sent.get("Negative",0))
-                else "#ff4444" if sent.get("Negative",0) >= sent.get("Neutral",0)
-                else "#ffbb33"
-            )
-            st.markdown(f"""
-            <div class="cluster-card">
-                <div class="cluster-title" style="color:{dom_color}">{profile['label']}</div>
-                <div style="font-size:1.8rem;font-weight:800;margin:0.3rem 0">{profile['size']}</div>
-                <div style="color:#aaa;font-size:0.8rem;margin-bottom:0.8rem">
-                    comments · {profile['pct_of_total']}% of total
-                </div>
-                <div style="margin-bottom:0.5rem;font-size:0.8rem;color:#888">Top Keywords:</div>
-                <div>{''.join(f'<span class="keyword-pill">{k}</span>' for k in profile['top_keywords'][:6])}</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-    st.markdown("#### 📝 AI-Generated Summary")
-    summary = generate_summary(df_final, profiles)
-    st.markdown(f'<div class="summary-box">{summary}</div>', unsafe_allow_html=True)
-
-    st.markdown("#### 📈 Model Confidence Distribution")
-    fig_conf = px.histogram(
-        df_final, x="confidence", color="sentiment", nbins=20, barmode="overlay",
-        color_discrete_map={"Positive":"#00c851","Neutral":"#ffbb33","Negative":"#ff4444"},
-        opacity=0.75,
-    )
-    fig_conf.update_layout(
-        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        yaxis=dict(gridcolor="#333"), margin=dict(t=20, b=20), height=300,
-    )
-    st.plotly_chart(fig_conf, use_container_width=True, key=f"{prefix}_conf")
-
-    st.markdown("---")
-    st.markdown("### ⬇️ Download Report")
-    dl1, dl2 = st.columns(2)
-    with dl1:
-        st.download_button(
-            "📥 Download Full CSV",
-            data=df_final.to_csv(index=False).encode("utf-8"),
-            file_name="sentiment_results.csv", mime="text/csv",
-            key=f"{prefix}_dl_csv",
-        )
-    with dl2:
-        st.download_button(
-            "📄 Download Text Report",
-            data=build_pdf_report(df_final, profiles, summary),
-            file_name="sentiment_report.txt", mime="text/plain",
-            key=f"{prefix}_dl_txt",
-        )
-
-
-# ─────────────────────────────────────────────
-# SECTION 1 — INPUT  (3 fully independent tabs)
-# ─────────────────────────────────────────────
-
-st.markdown("---")
-if not any(k in st.session_state for k in ["csv_ready", "url_ready", "manual_ready"]):
-   st.markdown("### <span class='step-badge'>1</span> Data Input", unsafe_allow_html=True)
-
-tab_upload, tab_url, tab_manual = st.tabs([
-    "📁 Upload CSV",
-    "🔗 Paste Reel URL",
-    "✏️ Type / Paste Comments",
-])
-
-# ── TAB 1: Upload CSV ──────────────────────────────────────────
-# ── TAB 1: Upload CSV ──────────────────────────────────────────
-with tab_upload:
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        uploaded = st.file_uploader(
-            "Upload your Apify-exported CSV",
-            type=["csv"],
-            help="Must have a column named: comment, text, body, or content",
-            key="csv_uploader",
-        )
-    
-    with col2:
-        st.markdown("##### — or —")
-        if st.button("📊 Load Sample Dataset", key="btn_sample", use_container_width=True):
-            # Create sample dataset
-            sample_data = pd.DataFrame({
-                "comment": [
-                    "Love this content! 🔥 Keep it up!",
-                    "MashaAllah beautiful video ❤️",
-                    "Not impressed, boring content",
-                    "This is amazing! Learned so much",
-                    "Average video, seen better",
-                    "Alhamdulillah very inspiring ✨",
-                    "Terrible quality, waste of time",
-                    "Best reel ever! Shared with friends",
-                    "ماشاءاللہ بہت خوب 😊",
-                    "Don't like this at all",
-                    "So helpful, thank you! 🙏",
-                    "Meh, could be better",
-                    "Absolutely brilliant! 👏",
-                    "Why would anyone post this?",
-                    "Inspiring and motivating! 🔥"
-                ]
-            })
-            st.session_state["csv_ready"] = sample_data
-            st.success("✅ Sample dataset loaded! Click 'Analyse CSV' below.")
-    
-    if uploaded:
-        df_csv = pd.read_csv(uploaded)
-        st.success(f"✅ Loaded {len(df_csv)} rows")
-        st.dataframe(df_csv.head(5), use_container_width=True)
-        if st.button("▶ Analyse CSV", key="btn_csv"):
-            st.session_state["csv_ready"] = df_csv
-            st.rerun()
-
-    if "csv_ready" in st.session_state:
-        render_analysis(st.session_state["csv_ready"],
-                        prefix="csv", source_label="Uploaded CSV / Sample Dataset")
-# ── TAB 2: Paste Reel URL ──────────────────────────────────────
-with tab_url:
-    reel_url = st.text_input("Instagram Reel URL",
-                             placeholder="https://www.instagram.com/reel/...",
-                             key="reel_url")
-
-    # Load API token from backend — user never needs to enter it
-    apify_token = _load_apify_token()
-    if not apify_token:
-        st.error(
-            "⚠️ Apify API token is not configured. "
-            "Please ask the administrator to set the `APIFY_TOKEN` secret."
-        )
-
-    if st.button("🚀 Scrape & Analyse", key="btn_scrape") and reel_url and apify_token:
-        import requests, time
-
-        try:
-            run_resp = requests.post(
-                "https://api.apify.com/v2/acts/apify~instagram-comment-scraper/runs",
-                headers={"Authorization": f"Bearer {apify_token}"},
-                json={"directUrls": [reel_url], "resultsLimit": 200},
-                timeout=30,
-            )
-        except Exception as e:
-            st.error(f"Network error: {e}")
-            st.stop()
-
-        if run_resp.status_code != 201:
-            st.error(f"Apify error {run_resp.status_code}: {run_resp.text[:200]}")
-            st.stop()
-
-        run_id     = run_resp.json()["data"]["id"]
-        dataset_id = run_resp.json()["data"]["defaultDatasetId"]
-        status_ph  = st.empty()
-        prog_bar   = st.progress(0)
-        max_wait, poll_interval, elapsed = 120, 5, 0
-
-        while elapsed < max_wait:
-            sr     = requests.get(
-                f"https://api.apify.com/v2/actor-runs/{run_id}",
-                headers={"Authorization": f"Bearer {apify_token}"}, timeout=15,
-            )
-            status = sr.json()["data"]["status"]
-            prog_bar.progress(min(elapsed / max_wait, 0.95))
-            status_ph.info(f"⏳ Scraping... ({elapsed}s) — {status}")
-            if status == "SUCCEEDED":
-                prog_bar.progress(1.0)
-                status_ph.success("✅ Done! Fetching comments...")
-                break
-            elif status in ("FAILED", "ABORTED", "TIMED-OUT"):
-                status_ph.error(f"❌ Run {status}.")
-                st.stop()
-            time.sleep(poll_interval)
-            elapsed += poll_interval
-        else:
-            st.error("⏱ Timed out. Upload CSV manually instead.")
-            st.stop()
-
-        items = requests.get(
-            f"https://api.apify.com/v2/datasets/{dataset_id}/items?format=json&clean=true",
-            headers={"Authorization": f"Bearer {apify_token}"}, timeout=30,
-        ).json()
-
-        if not items:
-            st.error("No comments found. Post may be private or have no comments.")
-            st.stop()
-
-        st.session_state["url_ready"] = pd.DataFrame(items)
-        st.success(f"✅ Scraped {len(items)} comments — running analysis!")
-
-    if "url_ready" in st.session_state:
-        render_analysis(st.session_state["url_ready"],
-                        prefix="url", source_label="Live Scraped Reel")
-
-
-# ── TAB 3: Type / Paste Comments ──────────────────────────────
-with tab_manual:
-    st.markdown("Type or paste comments below — **one comment per line**. Supports any language.")
-
-    user_input = st.text_area(
-        "Enter comments",
-        placeholder="Love this content!\nبہت اچھا ویڈیو تھا 🔥\nNot impressed at all.\nC'est vraiment incroyable!",
-        height=220,
-        key="manual_input",
-    )
-
-    if st.button("🔍 Analyse", key="btn_manual"):
-        lines = [l.strip() for l in user_input.strip().splitlines() if l.strip()]
-        if not lines:
-            st.warning("Please enter at least one comment.")
-        elif len(lines) == 1:
-            text_lower = lines[0].lower()
-            # Check cultural terms FIRST — TextBlob does not understand these words
-            if any(term.lower() in text_lower for term in CULTURAL_POSITIVE_TERMS):
-                label = "Positive 😊"
-                color = "#00c851"
-                conf  = 0.90
-            else:
-                try:
-                    from textblob import TextBlob
-                    pol = TextBlob(lines[0]).sentiment.polarity
-                except Exception:
-                    pol = 0.0
-                label = "Positive 😊" if pol > 0.05 else "Negative 😞" if pol < -0.05 else "Neutral 😐"
-                color = "#00c851"    if pol > 0.05 else "#ff4444"     if pol < -0.05 else "#ffbb33"
-                conf  = round(abs(pol), 2) if pol != 0.0 else 0.5
-            html = (
-                '<div style="background:#1e1e2e;border-radius:12px;padding:1.5rem;'
-                f'border-left:5px solid {color};margin-top:1rem;">'
-                '<div style="font-size:0.8rem;color:#aaa;margin-bottom:0.5rem">YOUR COMMENT</div>'
-                f'<div style="font-size:1rem;color:#e0e0e0;margin-bottom:1.2rem">"{lines[0]}"</div>'
-                f'<div style="font-size:2.2rem;font-weight:800;color:{color}">{label}</div>'
-                '<div style="font-size:0.85rem;color:#888;margin-top:0.4rem">'
-                f'Confidence: {conf}'
-                '</div></div>'
-            )
-            st.markdown(html, unsafe_allow_html=True)
-        else:
-            st.session_state["manual_ready"] = pd.DataFrame({"text": lines})
-            st.success(f"✅ {len(lines)} comments loaded — running analysis!")
-
-    if "manual_ready" in st.session_state:
-        render_analysis(st.session_state["manual_ready"],
-                        prefix="manual", source_label="Manually Entered Comments")
-
-if not any(k in st.session_state for k in ["csv_ready", "url_ready", "manual_ready"]):
-    st.info("👆 Choose a tab above — upload a CSV, paste a Reel URL, or type comments directly.")
-else:
-    with st.expander("🔄 Analyse a different source", expanded=False):
-        st.markdown("Load new data by switching tabs above, or clear current results below.")
-        if st.button("🗑️ Clear all results"):
-            for k in ["csv_ready", "url_ready", "manual_ready"]:
-                st.session_state.pop(k, None)
-            run_cleaning.clear()
-            run_sentiment.clear()
-            run_clustering.clear()
-            st.rerun()
+    st.caption("Supports English, Urdu (including Roman Urdu), Arabic, Hindi, French, Spanish
