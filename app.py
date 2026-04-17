@@ -739,3 +739,86 @@ with st.sidebar:
     st.divider()
     st.markdown("**Model:** `groq/llama-3.3-70b-versatile` 🌍")
     st.caption("Supports English, Urdu (including Roman Urdu), Arabic, Hindi, French, Spanish")
+
+# ─────────────────────────────────────────────
+# HEADER
+# ─────────────────────────────────────────────
+
+st.markdown('<div class="main-title">📊 Instagram Sentiment Analyser</div>', unsafe_allow_html=True)
+st.markdown('<div class="subtitle">Audience intelligence from Instagram Reel comments</div>', unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────
+# SHARED ANALYSIS RENDERER
+# ─────────────────────────────────────────────
+
+def render_analysis(df_raw: pd.DataFrame, prefix: str, source_label: str = ""):
+    import plotly.express as px
+
+    df_clean = run_cleaning(df_raw)
+    df_sent = run_sentiment(df_clean)
+    df_final, profiles = run_clustering(df_sent, n_clusters)
+
+    st.markdown("---")
+    st.markdown("### <span class='step-badge'>1</span> Data Input", unsafe_allow_html=True)
+    st.caption(f"📌 Source: {source_label}")
+
+    counts = df_final["sentiment"].value_counts()
+    total = len(df_final)
+    lang_counts = df_final["language"].value_counts() if "language" in df_final.columns else None
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Total Comments", f"{total:,}")
+    with col2:
+        n = counts.get("Positive", 0)
+        st.metric("✅ Positive", f"{n} ({n/total*100:.0f}%)")
+    with col3:
+        n = counts.get("Neutral", 0)
+        st.metric("➖ Neutral", f"{n} ({n/total*100:.0f}%)")
+    with col4:
+        n = counts.get("Negative", 0)
+        st.metric("❌ Negative", f"{n} ({n/total*100:.0f}%)")
+
+    if lang_counts is not None and not lang_counts.index.tolist() == ["unknown"]:
+        st.markdown("#### 🌍 Languages Detected")
+        lang_names = {
+            "en":"English","ur":"Urdu","ar":"Arabic","hi":"Hindi",
+            "fr":"French","es":"Spanish","de":"German","tr":"Turkish",
+        }
+        lang_cols = st.columns(min(len(lang_counts), 6))
+        for i, (lang, cnt) in enumerate(lang_counts.head(6).items()):
+            name = lang_names.get(lang, lang.upper())
+            pct = round(cnt / total * 100, 1)
+            with lang_cols[i]:
+                st.markdown(f"""
+                <div style="background:#1e1e2e;border-radius:10px;padding:0.8rem;text-align:center;border:1px solid #333;">
+                    <div style="font-size:1.4rem">{name}</div>
+                    <div style="font-size:1.5rem;font-weight:800;color:#a78bfa">{cnt}</div>
+                    <div style="font-size:0.75rem;color:#888">{pct}% of comments</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+    st.markdown("#### Sentiment Breakdown")
+    pie_data = df_final["sentiment"].value_counts().reset_index()
+    pie_data.columns = ["Sentiment", "Count"]
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        fig_pie = px.pie(pie_data, names="Sentiment", values="Count", color="Sentiment",
+                         color_discrete_map={"Positive":"#00c851","Neutral":"#ffbb33","Negative":"#ff4444"}, hole=0.45)
+        fig_pie.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                              legend=dict(orientation="h", y=-0.1), margin=dict(t=20, b=20))
+        st.plotly_chart(fig_pie, use_container_width=True, key=f"{prefix}_pie")
+
+    with col_b:
+        fig_bar = px.bar(pie_data, x="Sentiment", y="Count", color="Sentiment",
+                         color_discrete_map={"Positive":"#00c851","Neutral":"#ffbb33","Negative":"#ff4444"},
+                         text="Count")
+        fig_bar.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                              showlegend=False, margin=dict(t=20, b=20), yaxis=dict(gridcolor="#333"))
+        fig_bar.update_traces(textposition="outside")
+        st.plotly_chart(fig_bar, use_container_width=True, key=f"{prefix}_bar")
+
+    st.markdown("#### 🔑 Keyword Themes by Sentiment")
+    wc1
