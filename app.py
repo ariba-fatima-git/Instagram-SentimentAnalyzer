@@ -846,25 +846,55 @@ tab_upload, tab_url, tab_manual = st.tabs([
 ])
 
 # ── TAB 1: Upload CSV ──────────────────────────────────────────
+# ── TAB 1: Upload CSV ──────────────────────────────────────────
 with tab_upload:
-    uploaded = st.file_uploader(
-        "Upload your Apify-exported CSV",
-        type=["csv"],
-        help="Must have a column named: comment, text, body, or content",
-        key="csv_uploader",
-    )
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        uploaded = st.file_uploader(
+            "Upload your Apify-exported CSV",
+            type=["csv"],
+            help="Must have a column named: comment, text, body, or content",
+            key="csv_uploader",
+        )
+    
+    with col2:
+        st.markdown("##### — or —")
+        if st.button("📊 Load Sample Dataset", key="btn_sample", use_container_width=True):
+            # Create sample dataset
+            sample_data = pd.DataFrame({
+                "comment": [
+                    "Love this content! 🔥 Keep it up!",
+                    "MashaAllah beautiful video ❤️",
+                    "Not impressed, boring content",
+                    "This is amazing! Learned so much",
+                    "Average video, seen better",
+                    "Alhamdulillah very inspiring ✨",
+                    "Terrible quality, waste of time",
+                    "Best reel ever! Shared with friends",
+                    "ماشاءاللہ بہت خوب 😊",
+                    "Don't like this at all",
+                    "So helpful, thank you! 🙏",
+                    "Meh, could be better",
+                    "Absolutely brilliant! 👏",
+                    "Why would anyone post this?",
+                    "Inspiring and motivating! 🔥"
+                ]
+            })
+            st.session_state["csv_ready"] = sample_data
+            st.success("✅ Sample dataset loaded! Click 'Analyse CSV' below.")
+    
     if uploaded:
         df_csv = pd.read_csv(uploaded)
         st.success(f"✅ Loaded {len(df_csv)} rows")
         st.dataframe(df_csv.head(5), use_container_width=True)
         if st.button("▶ Analyse CSV", key="btn_csv"):
             st.session_state["csv_ready"] = df_csv
+            st.rerun()
 
     if "csv_ready" in st.session_state:
         render_analysis(st.session_state["csv_ready"],
-                        prefix="csv", source_label="Uploaded CSV")
-
-
+                        prefix="csv", source_label="Uploaded CSV / Sample Dataset")
 # ── TAB 2: Paste Reel URL ──────────────────────────────────────
 with tab_url:
     reel_url = st.text_input("Instagram Reel URL",
